@@ -113,7 +113,7 @@ scoop install nodejs-lts
 
 You should see version numbers printed.
 
-#### 7. Choose Project Location (Optional)
+#### Choose Project Location (Optional)
 
 Move to your home directory:
 
@@ -165,3 +165,4 @@ npm run dev
 ## To Be Continued...
 
 <!-- markdownlint-enable -->
+
