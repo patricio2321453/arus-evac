@@ -13,7 +13,7 @@ function Map() {
 
     const map = new MapLibre.Map({
       container: mapContainer.current,
-      style: "/positron.json",
+      style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
       center: [121, 13],
       zoom: 5,
     });

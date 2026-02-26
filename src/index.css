@@ -1,1 +1,130 @@
 @import "tailwindcss";
+
+.nav-icon-button {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.nav-icon-image {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  filter: grayscale(1) brightness(0.45);
+  transition:
+    filter 0.2s ease,
+    transform 0.2s ease;
+}
+
+.nav-icon-button:hover {
+  background-color: #eff6ff;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+  transform: translateY(-1px);
+}
+
+.nav-icon-button:hover .nav-icon-image {
+  filter: none;
+  transform: scale(1.08);
+}
+
+.nav-icon-button.is-active {
+  background-color: #dbeafe;
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+  animation: nav-icon-switch 220ms ease;
+}
+
+.nav-icon-button.is-active .nav-icon-image {
+  filter: none;
+  transform: scale(1.08);
+  animation: nav-icon-pop 260ms ease;
+}
+
+@keyframes nav-icon-switch {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.88);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes nav-icon-pop {
+  0% {
+    transform: scale(0.84) rotate(-10deg);
+  }
+  60% {
+    transform: scale(1.14) rotate(5deg);
+  }
+  100% {
+    transform: scale(1.08) rotate(0deg);
+  }
+}
+
+.shelter-action-icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    transform 0.2s ease;
+}
+
+.shelter-action-icon-button:hover {
+  background-color: #f4f4f5;
+  border-color: #a1a1aa;
+  transform: translateY(-1px);
+}
+
+.shelter-delete-button:hover {
+  background-color: #fef2f2;
+  border-color: #fca5a5;
+}
+
+.shelter-action-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.shelter-inline-button {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.shelter-inline-button:hover {
+  text-decoration: underline;
+}
+
+.shelter-select-checkbox {
+  margin-top: 5px;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
