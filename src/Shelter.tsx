@@ -12,97 +12,10 @@ import {
   TextArea,
   TextField,
 } from "@radix-ui/themes";
-import { useEffect, useMemo, useState } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from "react";
 import editIcon from "./assets/icons/editing.png";
 import trashIcon from "./assets/icons/trash.png";
-
-type ShelterRecord = {
-  id: string;
-  name: string;
-  area: string;
-  address: string;
-  capacity: number;
-  occupancy: number;
-  status: "Open" | "Limited" | "Full";
-  contact: string;
-  medicalSupport: "Yes" | "No";
-  lastUpdated: string;
-};
-
-const initialShelters: ShelterRecord[] = [
-  {
-    id: "s-001",
-    name: "San Isidro Community Hall",
-    area: "North Zone",
-    address: "Blk 2 P. Gomez St., San Isidro",
-    capacity: 280,
-    occupancy: 162,
-    status: "Open",
-    contact: "0917-215-4451",
-    medicalSupport: "Yes",
-    lastUpdated: "10 mins ago",
-  },
-  {
-    id: "s-002",
-    name: "Riverside Elementary Gym",
-    area: "North Zone",
-    address: "Riverside Rd., Brgy. 12",
-    capacity: 190,
-    occupancy: 171,
-    status: "Limited",
-    contact: "0918-433-1022",
-    medicalSupport: "No",
-    lastUpdated: "16 mins ago",
-  },
-  {
-    id: "s-003",
-    name: "City Sports Complex",
-    area: "Central Zone",
-    address: "Quezon Ave., City Proper",
-    capacity: 540,
-    occupancy: 520,
-    status: "Full",
-    contact: "0920-115-4777",
-    medicalSupport: "Yes",
-    lastUpdated: "8 mins ago",
-  },
-  {
-    id: "s-004",
-    name: "Sta. Cruz Covered Court",
-    area: "Central Zone",
-    address: "Mabini St., Sta. Cruz",
-    capacity: 210,
-    occupancy: 124,
-    status: "Open",
-    contact: "0919-332-6480",
-    medicalSupport: "Yes",
-    lastUpdated: "22 mins ago",
-  },
-  {
-    id: "s-005",
-    name: "South Bay Multipurpose Center",
-    area: "South Zone",
-    address: "Harbor View Dr., South Bay",
-    capacity: 320,
-    occupancy: 319,
-    status: "Full",
-    contact: "0916-775-2931",
-    medicalSupport: "No",
-    lastUpdated: "5 mins ago",
-  },
-  {
-    id: "s-006",
-    name: "Lakeside National High School",
-    area: "South Zone",
-    address: "Lakeside Rd., Brgy. Maligaya",
-    capacity: 410,
-    occupancy: 248,
-    status: "Open",
-    contact: "0935-228-6670",
-    medicalSupport: "Yes",
-    lastUpdated: "14 mins ago",
-  },
-];
+import { regionOptions, type Region, type ShelterRecord } from "./shelterData";
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
@@ -142,6 +55,10 @@ function parsePositiveNumber(value: string) {
   return Math.max(0, parsed);
 }
 
+function normalizeLocation(value: string) {
+  return value.trim().toLowerCase();
+}
+
 function Form({ setPanel }: { setPanel: (p: "list" | "form") => void }) {
   return (
     <>
@@ -160,13 +77,15 @@ function Form({ setPanel }: { setPanel: (p: "list" | "form") => void }) {
         </Flex>
         <Grid columns="2" gap="2">
           <Flex direction="column" gap="1">
-            <Text weight={"bold"}>Area</Text>
-            <Select.Root defaultValue="North Zone">
+            <Text weight={"bold"}>Region</Text>
+            <Select.Root defaultValue="Luzon">
               <Select.Trigger />
               <Select.Content>
-                <Select.Item value="North Zone">North Zone</Select.Item>
-                <Select.Item value="Central Zone">Central Zone</Select.Item>
-                <Select.Item value="South Zone">South Zone</Select.Item>
+                {regionOptions.map((region) => (
+                  <Select.Item key={region} value={region}>
+                    {region}
+                  </Select.Item>
+                ))}
               </Select.Content>
             </Select.Root>
           </Flex>
@@ -182,6 +101,10 @@ function Form({ setPanel }: { setPanel: (p: "list" | "form") => void }) {
             </Select.Root>
           </Flex>
         </Grid>
+        <Flex direction="column" gap="1">
+          <Text weight={"bold"}>Municipality/City</Text>
+          <TextField.Root placeholder="e.g. Batangas City" />
+        </Flex>
         <Grid columns="2" gap="2">
           <Flex direction="column" gap="1">
             <Text weight={"bold"}>Current Occupancy</Text>
@@ -244,6 +167,8 @@ type ListProps = {
   onDeleteShelter: (id: string) => void;
   onDeleteShelters: (ids: string[]) => void;
   onUpdateShelter: (shelter: ShelterRecord) => void;
+  onAreaFilterFocus: (filteredShelters: ShelterRecord[]) => void;
+  onShelterCardFocus: (shelterId: string) => void;
 };
 
 function List({
@@ -252,32 +177,43 @@ function List({
   onDeleteShelter,
   onDeleteShelters,
   onUpdateShelter,
+  onAreaFilterFocus,
+  onShelterCardFocus,
 }: ListProps) {
   const [searchValue, setSearchValue] = useState("");
-  const [selectedArea, setSelectedArea] = useState("all");
+  const [selectedRegion, setSelectedRegion] = useState<"all" | Region>("all");
+  const [municipalityFilter, setMunicipalityFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [editingShelterId, setEditingShelterId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<ShelterRecord | null>(null);
 
-  const areas = useMemo(
-    () => [...new Set(shelters.map((shelter) => shelter.area))],
-    [shelters]
-  );
+  const municipalityOptions = useMemo(() => {
+    const scopedShelters =
+      selectedRegion === "all"
+        ? shelters
+        : shelters.filter((shelter) => shelter.region === selectedRegion);
+
+    return [...new Set(scopedShelters.map((shelter) => shelter.municipalityCity))].sort();
+  }, [shelters, selectedRegion]);
 
   const filteredShelters = useMemo(() => {
     const query = searchValue.trim().toLowerCase();
+    const municipalityQuery = normalizeLocation(municipalityFilter);
 
     return shelters.filter((shelter) => {
-      const matchesArea =
-        selectedArea === "all" || shelter.area === selectedArea;
+      const matchesRegion =
+        selectedRegion === "all" || shelter.region === selectedRegion;
+      const matchesMunicipality =
+        municipalityQuery.length === 0 ||
+        normalizeLocation(shelter.municipalityCity) === municipalityQuery;
       const matchesSearch =
         query.length === 0 ||
         shelter.name.toLowerCase().includes(query) ||
         shelter.address.toLowerCase().includes(query);
 
-      return matchesArea && matchesSearch;
+      return matchesRegion && matchesMunicipality && matchesSearch;
     });
-  }, [shelters, searchValue, selectedArea]);
+  }, [municipalityFilter, selectedRegion, shelters, searchValue]);
 
   const totals = useMemo(() => {
     const totalCapacity = filteredShelters.reduce(
@@ -372,6 +308,10 @@ function List({
     setEditDraft(null);
   }
 
+  function handleRegionFilterClick() {
+    onAreaFilterFocus(filteredShelters);
+  }
+
   return (
     <>
       <Heading size="8">Shelter</Heading>
@@ -404,9 +344,13 @@ function List({
 
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between">
-            <Text size="2" weight="bold">
-              Area Filter
-            </Text>
+            <button
+              type="button"
+              onClick={handleRegionFilterClick}
+              className="text-left text-sm font-bold"
+            >
+              Region Filter
+            </button>
             <button
               type="button"
               className="shelter-inline-button"
@@ -415,17 +359,42 @@ function List({
               {allVisibleSelected ? "Unselect Visible" : "Select Visible"}
             </button>
           </Flex>
-          <Select.Root value={selectedArea} onValueChange={setSelectedArea}>
-            <Select.Trigger />
-            <Select.Content>
-              <Select.Item value="all">All Areas</Select.Item>
-              {areas.map((area) => (
-                <Select.Item key={area} value={area}>
-                  {area}
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
+          <Grid columns="2" gap="2">
+            <Flex direction="column" gap="1">
+              <Text size="1" color="gray">
+                Region
+              </Text>
+              <Select.Root
+                value={selectedRegion}
+                onValueChange={(value) =>
+                  setSelectedRegion(value as "all" | Region)
+                }
+              >
+                <Select.Trigger />
+                <Select.Content>
+                  <Select.Item value="all">All Regions</Select.Item>
+                  {regionOptions.map((region) => (
+                    <Select.Item key={region} value={region}>
+                      {region}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Root>
+            </Flex>
+            <Flex direction="column" gap="1">
+              <Text size="1" color="gray">
+                Municipality/City
+              </Text>
+              <TextField.Root
+                value={municipalityFilter}
+                onChange={(event) => setMunicipalityFilter(event.target.value)}
+                placeholder="Type any municipality/city"
+              />
+              <Text size="1" color="gray">
+                Existing entries: {municipalityOptions.join(", ") || "None"}
+              </Text>
+            </Flex>
+          </Grid>
         </Flex>
 
         {selectedIds.length > 0 && (
@@ -458,9 +427,11 @@ function List({
             Metrics Summary
           </Text>
           <Text as="div" size="1" color="gray">
-            {selectedArea === "all"
-              ? "Coverage: all shelter areas"
-              : `Coverage: ${selectedArea}`}
+            {selectedRegion === "all"
+              ? "Coverage: all regions and municipalities/cities"
+              : municipalityFilter.trim().length === 0
+                ? `Coverage: ${selectedRegion} (all municipalities/cities)`
+                : `Coverage: ${selectedRegion} - ${municipalityFilter.trim()}`}
           </Text>
 
           <Grid columns="2" gap="2" className="mt-3">
@@ -494,13 +465,26 @@ function List({
                 key={shelter.id}
                 className={`rounded-lg border p-3 shadow-sm ${
                   isSelected ? "border-blue-300 bg-blue-50/50" : "border-neutral-200"
-                }`}
+                } ${isEditing ? "" : "cursor-pointer"}`}
+                role={isEditing ? undefined : "button"}
+                tabIndex={isEditing ? undefined : 0}
+                onClick={() => {
+                  if (isEditing) return;
+                  onShelterCardFocus(shelter.id);
+                }}
+                onKeyDown={(event) => {
+                  if (isEditing) return;
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  onShelterCardFocus(shelter.id);
+                }}
               >
                 <Flex align="start" gap="2">
                   <input
                     type="checkbox"
                     className="shelter-select-checkbox"
                     checked={isSelected}
+                    onClick={(event) => event.stopPropagation()}
                     onChange={() => toggleSelectShelter(shelter.id)}
                     aria-label={`Select ${shelter.name}`}
                   />
@@ -513,7 +497,7 @@ function List({
                               {shelter.name}
                             </Text>
                             <Text as="div" size="1" color="gray">
-                              {shelter.area}
+                              {`${shelter.region} - ${shelter.municipalityCity}`}
                             </Text>
                           </Box>
                           <Flex align="center" gap="2">
@@ -523,7 +507,10 @@ function List({
                             <button
                               type="button"
                               className="shelter-action-icon-button"
-                              onClick={() => beginEdit(shelter)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                beginEdit(shelter);
+                              }}
                               aria-label={`Edit ${shelter.name}`}
                             >
                               <img src={editIcon} alt="" className="shelter-action-icon" />
@@ -531,7 +518,10 @@ function List({
                             <button
                               type="button"
                               className="shelter-action-icon-button shelter-delete-button"
-                              onClick={() => deleteSingleShelter(shelter.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deleteSingleShelter(shelter.id);
+                              }}
                               aria-label={`Delete ${shelter.name}`}
                             >
                               <img src={trashIcon} alt="" className="shelter-action-icon" />
@@ -577,14 +567,16 @@ function List({
                         />
                         <Grid columns="2" gap="2">
                           <Select.Root
-                            value={editDraft.area}
-                            onValueChange={(value) => updateDraft({ area: value })}
+                            value={editDraft.region}
+                            onValueChange={(value) =>
+                              updateDraft({ region: value as Region })
+                            }
                           >
                             <Select.Trigger />
                             <Select.Content>
-                              {areas.map((area) => (
-                                <Select.Item key={area} value={area}>
-                                  {area}
+                              {regionOptions.map((region) => (
+                                <Select.Item key={region} value={region}>
+                                  {region}
                                 </Select.Item>
                               ))}
                             </Select.Content>
@@ -605,6 +597,13 @@ function List({
                             </Select.Content>
                           </Select.Root>
                         </Grid>
+                        <TextField.Root
+                          value={editDraft.municipalityCity}
+                          onChange={(event) =>
+                            updateDraft({ municipalityCity: event.target.value })
+                          }
+                          placeholder="Municipality/City"
+                        />
                         <Grid columns="2" gap="2">
                           <TextField.Root
                             value={String(editDraft.occupancy)}
@@ -668,7 +667,13 @@ function List({
           {filteredShelters.length === 0 && (
             <Box className="rounded-md border border-dashed border-neutral-300 px-3 py-5 text-center">
               <Text size="2" color="gray">
-                No shelters found for this area/filter.
+                {municipalityFilter.trim().length > 0
+                  ? selectedRegion === "all"
+                    ? `No existing shelter in ${municipalityFilter.trim()}.`
+                    : `No existing shelter in ${municipalityFilter.trim()}, ${selectedRegion}.`
+                  : selectedRegion === "all"
+                    ? "No existing shelters found in the selected filters."
+                    : `No existing shelter in ${selectedRegion}.`}
               </Text>
             </Box>
           )}
@@ -678,9 +683,20 @@ function List({
   );
 }
 
-function Shelter() {
+type ShelterProps = {
+  shelters: ShelterRecord[];
+  setShelters: Dispatch<SetStateAction<ShelterRecord[]>>;
+  onAreaFilterFocus: (filteredShelters: ShelterRecord[]) => void;
+  onShelterCardFocus: (shelterId: string) => void;
+};
+
+function Shelter({
+  shelters,
+  setShelters,
+  onAreaFilterFocus,
+  onShelterCardFocus,
+}: ShelterProps) {
   const [panel, setPanel] = useState<"list" | "form">("list");
-  const [shelters, setShelters] = useState<ShelterRecord[]>(initialShelters);
 
   function deleteShelter(id: string) {
     setShelters((current) => current.filter((shelter) => shelter.id !== id));
@@ -710,6 +726,8 @@ function Shelter() {
           onDeleteShelter={deleteShelter}
           onDeleteShelters={deleteShelters}
           onUpdateShelter={updateShelter}
+          onAreaFilterFocus={onAreaFilterFocus}
+          onShelterCardFocus={onShelterCardFocus}
         />
       )}
       {panel === "form" && <Form setPanel={setPanel} />}
