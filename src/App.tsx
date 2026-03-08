@@ -49,9 +49,9 @@ function App() {
   return (
     <Theme>
       {/* Sidebar.tsx */}
-      <Grid columns={"1fr 3fr"} rows={"1"} className="h-screen w-screen">
+      <Grid columns={"1fr 3fr"} rows={"1"} className="h-screen w-screen overflow-hidden">
         {/* Aside */}
-        <Grid columns={"1fr 7fr"} rows={"1"}>
+        <Grid columns={"1fr 7fr"} rows={"1"} className="h-full overflow-hidden">
           <Box className="border-r border-r-neutral-200">
             <Flex direction={"column"} align={"center"} py={"5"} gap={"3"}>
               {navItems.map((item) => (
@@ -92,7 +92,7 @@ function App() {
           </Flex>
         </Grid>
         {/* Main */}
-        <Box>
+        <Box className="h-full w-full overflow-hidden">
           <Map
             shelters={shelters}
             areaFilterFocusRequest={areaFilterFocusRequest}
