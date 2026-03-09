@@ -5,6 +5,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { MaplibreTerradrawControl } from "@watergis/maplibre-gl-terradraw";
 import "@watergis/maplibre-gl-terradraw/dist/maplibre-gl-terradraw.css";
 import { type ShelterRecord } from "./shelterData";
+import { type HazardRecord } from "./hazardData";
 import LayerManagementPanel from "./map/layerManagement/LayerManagementPanel";
 import {
   cloneLayerConfigs,
@@ -26,6 +27,24 @@ const STORAGE_KEY_LAYER_PRESET = "arus-evac-layer-management.saved-preset.v1";
 const STORAGE_KEY_LAYER_STACK = "arus-evac-layer-management.layer-stack.v1";
 const STORAGE_KEY_LAYER_VISIBILITY_PRESETS = "arus-evac-layer-management.layer-visibility-presets.v1";
 const DEFAULT_VISIBILITY_PRESET_PURPOSE = "General";
+const HAZARD_SOURCE_ID = "hazard-isochrones-source";
+const HAZARD_FILL_LAYER_ID = "hazard-isochrones-fill-layer";
+const HAZARD_OUTLINE_LAYER_ID = "hazard-isochrones-outline-layer";
+const HAZARD_MIN_RADIUS_KM = 0.2;
+const HAZARD_MAX_RADIUS_KM = 5.6;
+const HAZARD_MIN_GAP_KM = 0.9;
+const HAZARD_FREEFORM_SEGMENTS = 16;
+const HAZARD_FREEFORM_JITTER = 0.34;
+const HAZARD_RADIUS_GROWTH_RATE = 0.45;
+const HAZARD_RADIUS_GROWTH_OFFSET_KM = 0.25;
+
+type HazardIsochroneSource = {
+  hazardId: string;
+  latitude: number;
+  longitude: number;
+  radiusKm: number;
+  baseRadiusKm: number;
+};
 
 function sanitizeStatus(value: unknown): ShelterRecord["status"] {
   if (value === "Open" || value === "Limited" || value === "Full") return value;
@@ -267,13 +286,24 @@ type AreaFilterFocusRequest = {
   requestId: number;
 };
 
+type HazardCardFocusRequest = {
+  hazardId: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  requestId: number;
+};
+
 type MapProps = {
   shelters: ShelterRecord[];
+  hazards: HazardRecord[];
+  editingHazardId: string | null;
+  onHazardGeometryChange?: (hazardId: string, isochroneGeometry: GeoJSON.Polygon) => void;
   areaFilterFocusRequest: AreaFilterFocusRequest;
   shelterCardFocusRequest: {
     shelterId: string | null;
     requestId: number;
   };
+  hazardCardFocusRequest: HazardCardFocusRequest;
 };
 
 function fitMapToShelters(map: MapLibre.Map, shelters: ShelterRecord[]) {
@@ -304,7 +334,299 @@ function flyToShelter(map: MapLibre.Map, shelter: ShelterRecord) {
   });
 }
 
+function flyToHazard(map: MapLibre.Map, latitude: number, longitude: number) {
+  map.flyTo({
+    center: [longitude, latitude],
+    zoom: 13,
+    duration: 900,
+    essential: true,
+  });
+}
+
+function estimateHazardRadiusKm(hazard: HazardRecord) {
+  const baseBySeverity: Record<HazardRecord["severity"], number> = {
+    Low: 1.6,
+    Moderate: 2.4,
+    High: 3.2,
+    Critical: 4.2,
+  };
+  const leadTimeFactor = Math.max(0, hazard.forecastLeadHours) / 24;
+  const radius = Math.min(
+    HAZARD_MAX_RADIUS_KM,
+    baseBySeverity[hazard.severity] + leadTimeFactor * 0.55
+  );
+  return Math.round(radius * 10) / 10;
+}
+
+function closePolygonRing(ring: [number, number][]) {
+  if (ring.length === 0) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) return ring;
+  return [...ring, first];
+}
+
+function buildIsochroneRing(
+  latitude: number,
+  longitude: number,
+  radiusKm: number,
+  seed: string,
+  segments = HAZARD_FREEFORM_SEGMENTS
+) {
+  const earthRadiusKm = 6371;
+  const radiusKmNormalized = Math.max(HAZARD_MIN_RADIUS_KM, radiusKm);
+  const latitudeRadians = (latitude * Math.PI) / 180;
+  const longitudeRadians = (longitude * Math.PI) / 180;
+  const sinLatitude = Math.sin(latitudeRadians);
+  const cosLatitude = Math.cos(latitudeRadians);
+  const ring: [number, number][] = [];
+  const seedBase = hashString(seed);
+  const orientation = deterministicRandom(seedBase, 1) * Math.PI * 2;
+
+  for (let i = 0; i <= segments; i += 1) {
+    const bearing = (i / segments) * 2 * Math.PI + orientation;
+    const rawPrev = deterministicRandom(seedBase, i + 16);
+    const rawCurrent = deterministicRandom(seedBase, i + 17);
+    const rawNext = deterministicRandom(seedBase, i + 18);
+    const jitter = ((rawPrev + rawCurrent + rawNext) / 3 - 0.5) * 2;
+    const localRadiusKm = Math.max(
+      HAZARD_MIN_RADIUS_KM,
+      radiusKmNormalized * (1 + jitter * HAZARD_FREEFORM_JITTER)
+    );
+    const angularDistance = localRadiusKm / earthRadiusKm;
+    const sinDistance = Math.sin(angularDistance);
+    const cosDistance = Math.cos(angularDistance);
+    const latRadians = Math.asin(
+      sinLatitude * cosDistance + cosLatitude * sinDistance * Math.cos(bearing)
+    );
+    const lonRadians =
+      longitudeRadians +
+      Math.atan2(
+        Math.sin(bearing) * sinDistance * cosLatitude,
+        cosDistance - sinLatitude * Math.sin(latRadians)
+      );
+    ring.push([(lonRadians * 180) / Math.PI, (latRadians * 180) / Math.PI]);
+  }
+
+  return closePolygonRing(ring);
+}
+
+function haversineDistanceKm(
+  startLatitude: number,
+  startLongitude: number,
+  endLatitude: number,
+  endLongitude: number
+) {
+  const earthRadiusKm = 6371;
+  const startLatitudeRadians = (startLatitude * Math.PI) / 180;
+  const endLatitudeRadians = (endLatitude * Math.PI) / 180;
+  const deltaLatitudeRadians = ((endLatitude - startLatitude) * Math.PI) / 180;
+  const deltaLongitudeRadians = ((endLongitude - startLongitude) * Math.PI) / 180;
+
+  const haversineTerm =
+    Math.sin(deltaLatitudeRadians / 2) ** 2 +
+    Math.cos(startLatitudeRadians) *
+      Math.cos(endLatitudeRadians) *
+      Math.sin(deltaLongitudeRadians / 2) ** 2;
+  const angularDistance = 2 * Math.atan2(Math.sqrt(haversineTerm), Math.sqrt(1 - haversineTerm));
+  return earthRadiusKm * angularDistance;
+}
+
+function resolveHazardRadiusKm(
+  latitude: number,
+  longitude: number,
+  baseRadiusKm: number,
+  placedHazards: HazardIsochroneSource[]
+) {
+  if (placedHazards.length === 0) return Math.max(HAZARD_MIN_RADIUS_KM, baseRadiusKm);
+
+  let resolvedRadiusKm = baseRadiusKm;
+  for (const placedHazard of placedHazards) {
+    const centerDistanceKm = haversineDistanceKm(
+      latitude,
+      longitude,
+      placedHazard.latitude,
+      placedHazard.longitude
+    );
+    const maxNonOverlapRadiusKm =
+      centerDistanceKm - placedHazard.radiusKm - HAZARD_MIN_GAP_KM;
+    resolvedRadiusKm = Math.min(resolvedRadiusKm, maxNonOverlapRadiusKm);
+  }
+
+  return Math.max(HAZARD_MIN_RADIUS_KM, resolvedRadiusKm);
+}
+
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function deterministicRandom(seed: number, index: number) {
+  const value = Math.sin(seed * 12.9898 + index * 78.233) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function getHazardPolygonRing(geometry?: GeoJSON.Polygon): [number, number][] | null {
+  if (!geometry) return null;
+  if (!Array.isArray(geometry.coordinates) || geometry.coordinates.length === 0) return null;
+  const rawRing = geometry.coordinates[0];
+  if (!Array.isArray(rawRing) || rawRing.length < 4) return null;
+
+  const ring: [number, number][] = [];
+  for (const rawCoordinate of rawRing) {
+    if (!Array.isArray(rawCoordinate) || rawCoordinate.length < 2) continue;
+    const longitude = Number(rawCoordinate[0]);
+    const latitude = Number(rawCoordinate[1]);
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) continue;
+    ring.push([longitude, latitude]);
+  }
+
+  if (ring.length < 4) return null;
+  return closePolygonRing(ring);
+}
+
+function buildHazardGeoJSON(hazards: HazardRecord[]): GeoJSON.FeatureCollection {
+  return buildHazardGeoJSONWithRadii(hazards).collection;
+}
+
+function buildHazardGeoJSONWithRadii(
+  hazards: HazardRecord[],
+  previousResolvedRadiusByHazardId: Record<string, number> = {}
+): {
+  collection: GeoJSON.FeatureCollection;
+  resolvedRadiusByHazardId: Record<string, number>;
+} {
+  const placedHazards: HazardIsochroneSource[] = [];
+  const resolvedRadiusByHazardId: Record<string, number> = {};
+  const sortedHazards = hazards
+    .filter((hazard) => Number.isFinite(hazard.latitude) && Number.isFinite(hazard.longitude))
+    .map((hazard) => ({ hazard, baseRadiusKm: estimateHazardRadiusKm(hazard) }))
+    .sort((a, b) => b.baseRadiusKm - a.baseRadiusKm);
+  const features: GeoJSON.Feature[] = [];
+
+  for (const { hazard, baseRadiusKm } of sortedHazards) {
+    const ringFromGeometry = getHazardPolygonRing(hazard.isochroneGeometry);
+    let resolvedRadiusKm = ringFromGeometry
+      ? baseRadiusKm
+      : resolveHazardRadiusKm(hazard.latitude, hazard.longitude, baseRadiusKm, placedHazards);
+
+    // Prevent abrupt growth when nearby hazards are removed.
+    const previousRadius = previousResolvedRadiusByHazardId[hazard.id];
+    if (Number.isFinite(previousRadius) && resolvedRadiusKm > previousRadius) {
+      const maxStepUpKm =
+        previousRadius * HAZARD_RADIUS_GROWTH_RATE + HAZARD_RADIUS_GROWTH_OFFSET_KM;
+      resolvedRadiusKm = Math.min(resolvedRadiusKm, previousRadius + maxStepUpKm);
+    }
+
+    const ring =
+      ringFromGeometry ??
+      buildIsochroneRing(hazard.latitude, hazard.longitude, resolvedRadiusKm, hazard.id);
+    resolvedRadiusByHazardId[hazard.id] = resolvedRadiusKm;
+    placedHazards.push({
+      hazardId: hazard.id,
+      latitude: hazard.latitude,
+      longitude: hazard.longitude,
+      radiusKm: resolvedRadiusKm,
+      baseRadiusKm,
+    });
+
+    features.push({
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [ring],
+      },
+      properties: {
+        id: hazard.id,
+        name: hazard.name,
+        type: hazard.type,
+        status: hazard.status,
+        severity: hazard.severity,
+        region: hazard.region,
+        radiusKm: resolvedRadiusKm,
+        baseRadiusKm,
+      },
+    });
+  }
+
+  return {
+    collection: {
+      type: "FeatureCollection",
+      features,
+    },
+    resolvedRadiusByHazardId,
+  };
+}
+
+function ensureHazardLayer(map: MapLibre.Map) {
+  if (!map.getSource(HAZARD_SOURCE_ID)) {
+    map.addSource(HAZARD_SOURCE_ID, {
+      type: "geojson",
+      data: buildHazardGeoJSON([]),
+    });
+  }
+
+  if (!map.getLayer(HAZARD_FILL_LAYER_ID)) {
+    map.addLayer({
+      id: HAZARD_FILL_LAYER_ID,
+      type: "fill",
+      source: HAZARD_SOURCE_ID,
+      paint: {
+        "fill-color": [
+          "match",
+          ["get", "severity"],
+          "Low",
+          "#22c55e",
+          "Moderate",
+          "#3b82f6",
+          "High",
+          "#f97316",
+          "#ef4444",
+        ],
+        "fill-opacity": 0.22,
+      },
+    });
+  }
+
+  if (!map.getLayer(HAZARD_OUTLINE_LAYER_ID)) {
+    map.addLayer({
+      id: HAZARD_OUTLINE_LAYER_ID,
+      type: "line",
+      source: HAZARD_SOURCE_ID,
+      paint: {
+        "line-color": [
+          "match",
+          ["get", "severity"],
+          "Low",
+          "#15803d",
+          "Moderate",
+          "#1d4ed8",
+          "High",
+          "#c2410c",
+          "#b91c1c",
+        ],
+        "line-width": 2,
+        "line-opacity": 0.9,
+      },
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+    });
+  }
+}
+
 function getFeatureShelterId(feature: MapGeoJSONFeature): string | null {
+  const rawId = feature.properties?.id;
+  if (typeof rawId !== "string") return null;
+  return rawId;
+}
+
+function getFeatureHazardId(feature: MapGeoJSONFeature): string | null {
   const rawId = feature.properties?.id;
   if (typeof rawId !== "string") return null;
   return rawId;
@@ -317,6 +639,16 @@ function findShelterByFeature(
   const shelterId = getFeatureShelterId(feature);
   if (!shelterId) return null;
   return shelters.find((shelter) => shelter.id === shelterId) ?? null;
+}
+
+function findHazardByFeature(
+  hazards: HazardRecord[],
+  feature: MapGeoJSONFeature | null | undefined
+): HazardRecord | null {
+  if (!feature) return null;
+  const hazardId = getFeatureHazardId(feature);
+  if (!hazardId) return null;
+  return hazards.find((hazard) => hazard.id === hazardId) ?? null;
 }
 
 function getStatusColorTokens(status: ShelterRecord["status"]) {
@@ -544,17 +876,44 @@ function buildHoverPopupContent(shelter: ShelterRecord): HTMLDivElement {
   return container;
 }
 
+function buildHazardHoverPopupContent(hazard: HazardRecord): HTMLDivElement {
+  const container = document.createElement("div");
+  container.className = "hazard-hover-popup-content";
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+  container.style.gap = "2px";
+  container.style.maxWidth = "220px";
+
+  const name = document.createElement("div");
+  name.style.fontWeight = "700";
+  name.style.fontSize = "12px";
+  name.textContent = hazard.name;
+
+  const location = document.createElement("div");
+  location.style.fontSize = "11px";
+  location.style.color = "#4b5563";
+  location.textContent = `${hazard.municipalityCity}, ${hazard.region}`;
+
+  container.append(name, location);
+  return container;
+}
+
 function Map({
   shelters,
+  hazards,
   areaFilterFocusRequest,
   shelterCardFocusRequest,
+  hazardCardFocusRequest,
 }: MapProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapInstance = useRef<MapLibre.Map | null>(null);
   const sheltersRef = useRef<ShelterRecord[]>(shelters);
+  const hazardsRef = useRef<HazardRecord[]>(hazards);
   const hoverPopupRef = useRef<MapLibre.Popup | null>(null);
   const hoveredShelterIdRef = useRef<string | null>(null);
+  const hoveredHazardIdRef = useRef<string | null>(null);
   const selectedShelterIdRef = useRef<string | null>(null);
+  const hazardResolvedRadiusRef = useRef<Record<string, number>>({});
   const layerConfigsRef = useRef<LayerConfig[]>(createDefaultLayerStack());
 
   const [selectedShelterId, setSelectedShelterId] = useState<string | null>(null);
@@ -581,10 +940,15 @@ function Map({
   const [layerDiagnosticsUpdatedAt, setLayerDiagnosticsUpdatedAt] = useState<Date>(
     new Date()
   );
+  const [selectedHazardId, setSelectedHazardId] = useState<string | null>(null);
 
   const selectedShelter = useMemo(
     () => shelters.find((shelter) => shelter.id === selectedShelterId) ?? null,
     [selectedShelterId, shelters]
+  );
+  const selectedHazard = useMemo(
+    () => hazards.find((hazard) => hazard.id === selectedHazardId) ?? null,
+    [hazards, selectedHazardId]
   );
   const selectableLayerKinds = useMemo(
     () =>
@@ -625,6 +989,10 @@ function Map({
   useEffect(() => {
     sheltersRef.current = shelters;
   }, [shelters]);
+
+  useEffect(() => {
+    hazardsRef.current = hazards;
+  }, [hazards]);
 
   useEffect(() => {
     persistLayerStackToStorage(layerConfigs);
@@ -866,6 +1234,14 @@ function Map({
         layerConfigsRef.current,
         selectedShelterIdRef.current
       );
+      ensureHazardLayer(map);
+      const hazardSource = map.getSource(HAZARD_SOURCE_ID) as MapLibre.GeoJSONSource | null;
+      const hazardBuild = buildHazardGeoJSONWithRadii(
+        hazardsRef.current,
+        hazardResolvedRadiusRef.current
+      );
+      hazardResolvedRadiusRef.current = hazardBuild.resolvedRadiusByHazardId;
+      hazardSource?.setData(hazardBuild.collection);
       hoverPopupRef.current = new MapLibre.Popup({
         closeButton: false,
         closeOnClick: false,
@@ -875,61 +1251,94 @@ function Map({
 
       map.on("mousemove", (event) => {
         const interactiveLayerIds = getInteractiveLayerIds(map, layerConfigsRef.current);
-        if (interactiveLayerIds.length === 0) {
+        const hoveredShelterFeature =
+          interactiveLayerIds.length > 0
+            ? map.queryRenderedFeatures(event.point, {
+                layers: interactiveLayerIds,
+              })[0]
+            : null;
+        const hoveredHazardFeature = map.queryRenderedFeatures(event.point, {
+          layers: [HAZARD_FILL_LAYER_ID, HAZARD_OUTLINE_LAYER_ID],
+        })[0];
+        if (!hoveredShelterFeature && !hoveredHazardFeature) {
           map.getCanvas().style.cursor = "";
           hoveredShelterIdRef.current = null;
+          hoveredHazardIdRef.current = null;
           hoverPopupRef.current?.remove();
           return;
         }
 
-        const hoveredFeature = map.queryRenderedFeatures(event.point, {
-          layers: interactiveLayerIds,
-        })[0];
         const hoverPopup = hoverPopupRef.current;
+        if (!hoverPopup) return;
 
-        if (!hoveredFeature || !hoverPopup) {
-          map.getCanvas().style.cursor = "";
-          hoveredShelterIdRef.current = null;
-          hoverPopup?.remove();
+        const shelter = hoveredShelterFeature
+          ? findShelterByFeature(sheltersRef.current, hoveredShelterFeature)
+          : null;
+        if (shelter) {
+          if (hoveredShelterIdRef.current === shelter.id) return;
+          hoveredShelterIdRef.current = shelter.id;
+          hoveredHazardIdRef.current = null;
+          map.getCanvas().style.cursor = "pointer";
+          hoverPopup
+            .setLngLat([shelter.longitude, shelter.latitude])
+            .setDOMContent(buildHoverPopupContent(shelter))
+            .addTo(map);
           return;
         }
 
-        const shelter = findShelterByFeature(sheltersRef.current, hoveredFeature);
-        if (!shelter) {
+        const hazard = findHazardByFeature(hazardsRef.current, hoveredHazardFeature);
+        if (!hazard) {
           map.getCanvas().style.cursor = "";
           hoveredShelterIdRef.current = null;
+          hoveredHazardIdRef.current = null;
           hoverPopup.remove();
           return;
         }
 
-        if (hoveredShelterIdRef.current === shelter.id) return;
-        hoveredShelterIdRef.current = shelter.id;
+        if (hoveredHazardIdRef.current === hazard.id) return;
+        hoveredShelterIdRef.current = null;
+        hoveredHazardIdRef.current = hazard.id;
         map.getCanvas().style.cursor = "pointer";
         hoverPopup
-          .setLngLat([shelter.longitude, shelter.latitude])
-          .setDOMContent(buildHoverPopupContent(shelter))
+          .setLngLat([hazard.longitude, hazard.latitude])
+          .setDOMContent(buildHazardHoverPopupContent(hazard))
           .addTo(map);
       });
 
       map.on("click", (event) => {
         const interactiveLayerIds = getInteractiveLayerIds(map, layerConfigsRef.current);
-        if (interactiveLayerIds.length === 0) {
-          return;
-        }
-
-        const clickedFeature = map.queryRenderedFeatures(event.point, {
+        const clickedShelterFeature = map.queryRenderedFeatures(event.point, {
           layers: interactiveLayerIds,
         })[0];
-        if (!clickedFeature) {
+        if (!clickedShelterFeature) {
+          const clickedHazardFeature = map.queryRenderedFeatures(event.point, {
+            layers: [HAZARD_FILL_LAYER_ID, HAZARD_OUTLINE_LAYER_ID],
+          })[0];
+          const hazard = findHazardByFeature(hazardsRef.current, clickedHazardFeature);
+
           setSelectedShelterId(null);
           selectedShelterIdRef.current = null;
+          hoveredShelterIdRef.current = null;
+          hoveredHazardIdRef.current = null;
+          setSelectedHazardId(null);
+
+          if (!hazard) {
+            hoverPopupRef.current?.remove();
+            return;
+          }
+
+          hoveredHazardIdRef.current = hazard.id;
+          setSelectedHazardId(hazard.id);
+          hoverPopupRef.current?.remove();
+          flyToHazard(map, hazard.latitude, hazard.longitude);
           return;
         }
 
-        const shelter = findShelterByFeature(sheltersRef.current, clickedFeature);
+        const shelter = findShelterByFeature(sheltersRef.current, clickedShelterFeature);
         if (!shelter) return;
 
         setSelectedShelterId(shelter.id);
+        setSelectedHazardId(null);
         selectedShelterIdRef.current = shelter.id;
         hoveredShelterIdRef.current = null;
         hoverPopupRef.current?.remove();
@@ -964,6 +1373,7 @@ function Map({
 
     return () => {
       hoveredShelterIdRef.current = null;
+      hoveredHazardIdRef.current = null;
       hoverPopupRef.current?.remove();
       hoverPopupRef.current = null;
       if (mapInstance.current) {
@@ -978,6 +1388,20 @@ function Map({
     if (!map || !map.isStyleLoaded()) return;
     void syncManagedLayers(map, shelters, layerConfigs, selectedShelterId);
   }, [layerConfigs, selectedShelterId, shelters]);
+
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    ensureHazardLayer(map);
+    const hazardSource = map.getSource(HAZARD_SOURCE_ID) as MapLibre.GeoJSONSource | null;
+    const hazardBuild = buildHazardGeoJSONWithRadii(
+      hazards,
+      hazardResolvedRadiusRef.current
+    );
+    hazardResolvedRadiusRef.current = hazardBuild.resolvedRadiusByHazardId;
+    hazardSource?.setData(hazardBuild.collection);
+  }, [hazards]);
 
   useEffect(() => {
     if (areaFilterFocusRequest.requestId === 0) return;
@@ -1006,8 +1430,31 @@ function Map({
 
     flyToShelter(map, targetShelter);
     setSelectedShelterId(targetShelter.id);
+    setSelectedHazardId(null);
     selectedShelterIdRef.current = targetShelter.id;
   }, [shelterCardFocusRequest, shelters]);
+
+  useEffect(() => {
+    if (hazardCardFocusRequest.requestId === 0) return;
+
+    const map = mapInstance.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const { latitude, longitude } = hazardCardFocusRequest;
+    if (
+      latitude === null ||
+      longitude === null ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude)
+    ) {
+      return;
+    }
+
+    flyToHazard(map, latitude, longitude);
+    setSelectedShelterId(null);
+    selectedShelterIdRef.current = null;
+    setSelectedHazardId(hazardCardFocusRequest.hazardId ?? null);
+  }, [hazardCardFocusRequest]);
 
   useEffect(() => {
     if (!selectedShelterId) return;
@@ -1017,6 +1464,14 @@ function Map({
       selectedShelterIdRef.current = null;
     }
   }, [selectedShelterId, shelters]);
+
+  useEffect(() => {
+    if (!selectedHazardId) return;
+    const stillExists = hazards.some((hazard) => hazard.id === selectedHazardId);
+    if (!stillExists) {
+      setSelectedHazardId(null);
+    }
+  }, [hazards, selectedHazardId]);
 
   function toggleLayerStatusFilter(
     layerId: string,
@@ -1135,6 +1590,43 @@ function Map({
               {(selectedShelter.capacity - selectedShelter.occupancy).toLocaleString()}
             </div>
             <div>Contact: {selectedShelter.contact}</div>
+          </div>
+        </div>
+      )}
+
+      {selectedHazard && !selectedShelter && (
+        <div className="shelter-detail-panel absolute bottom-3 left-3 z-10 w-[300px] rounded-lg border border-neutral-200 bg-white/95 p-3 shadow-lg backdrop-blur-[1px]">
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <div className="text-sm font-bold text-neutral-900">{selectedHazard.name}</div>
+              <div className="text-xs text-neutral-600">
+                {selectedHazard.municipalityCity}, {selectedHazard.region}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="rounded border border-neutral-300 px-2 py-0.5 text-xs text-neutral-700 hover:bg-neutral-100"
+              onClick={() => setSelectedHazardId(null)}
+            >
+              Close
+            </button>
+          </div>
+          <div className="space-y-1 text-xs text-neutral-700">
+            <div>Type: {selectedHazard.type}</div>
+            <div>Status: {selectedHazard.status}</div>
+            <div>Severity: {selectedHazard.severity}</div>
+            <div>Forecast lead: {selectedHazard.forecastLeadHours} hrs</div>
+            <div>Affected barangays: {selectedHazard.affectedBarangays.toLocaleString()}</div>
+            <div>
+              Estimated affected population:{" "}
+              {selectedHazard.estimatedAffectedPopulation.toLocaleString()}
+            </div>
+            <div>
+              Expected evacuee need: {selectedHazard.expectedEvacueeNeed.toLocaleString()}
+            </div>
+            <div>Source: {selectedHazard.sourceAgency || "—"}</div>
+            <div>Last updated: {selectedHazard.lastUpdated}</div>
+            <div>Notes: {selectedHazard.notes || "—"}</div>
           </div>
         </div>
       )}
