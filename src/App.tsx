@@ -4,10 +4,12 @@ import Map from "./Map";
 import Shelter from "./Shelter";
 import SimulationPanel from "./SimulationPanel";
 import HazardManagement from "./HazardManagement";
+import Population from "./Population";
 import { initialHazards, type HazardRecord } from "./hazardData";
 import { initialShelters, type ShelterRecord } from "./shelterData";
 import homeIcon from "./assets/icons/home.png";
 import typhoonIcon from "./assets/icons/typhoon.png";
+import peopleIcon from "./assets/icons/people.png";
 import warningIcon from "./assets/icons/warning.png";
 
 const STORAGE_KEY_SHELTERS = "arus-evac.shelters.v1";
@@ -17,6 +19,7 @@ const navItems = [
   { id: "home", label: "Home", icon: homeIcon },
   { id: "typhoon", label: "Typhoon", icon: typhoonIcon },
   { id: "hazardManagement", label: "Hazard Management", icon: warningIcon },
+  { id: "population", label: "Population", icon: peopleIcon },
 ] as const;
 
 function loadSheltersFromStorage() {
@@ -58,6 +61,8 @@ function App() {
     () => loadHazardsFromStorage() ?? initialHazards
   );
   const [editingHazardId, setEditingHazardId] = useState<string | null>(null);
+  const [selectedHazardForPopulationId, setSelectedHazardForPopulationId] =
+    useState<string | null>(null);
   const [areaFilterFocusRequest, setAreaFilterFocusRequest] = useState<{
     shelterIds: string[];
     requestId: number;
@@ -79,6 +84,17 @@ function App() {
     requestId: number;
   }>({
     hazardId: null,
+    latitude: null,
+    longitude: null,
+    requestId: 0,
+  });
+  const [populationCardFocusRequest, setPopulationCardFocusRequest] = useState<{
+    municipality: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    requestId: number;
+  }>({
+    municipality: null,
     latitude: null,
     longitude: null,
     requestId: 0,
@@ -107,8 +123,25 @@ function App() {
     }));
   }
 
+  function handlePopulationCardFocus(
+    municipality: string,
+    latitude: number,
+    longitude: number
+  ) {
+    setPopulationCardFocusRequest((current) => ({
+      municipality,
+      latitude,
+      longitude,
+      requestId: current.requestId + 1,
+    }));
+  }
+
   function handleHazardEditingIdChange(nextId: string | null) {
     setEditingHazardId(nextId);
+  }
+
+  function handleHazardSelectionChange(nextHazardId: string | null) {
+    setSelectedHazardForPopulationId(nextHazardId);
   }
 
   function handleHazardGeometryChange(hazardId: string, isochroneGeometry: GeoJSON.Polygon) {
@@ -124,6 +157,18 @@ function App() {
       setEditingHazardId(null);
     }
   }, [activeNav]);
+
+  useEffect(() => {
+    if (!selectedHazardForPopulationId) return;
+    const exists = hazards.some((hazard) => hazard.id === selectedHazardForPopulationId);
+    if (!exists) {
+      setSelectedHazardForPopulationId(null);
+    }
+  }, [hazards, selectedHazardForPopulationId]);
+
+  const selectedHazardForPopulation = selectedHazardForPopulationId
+    ? hazards.find((hazard) => hazard.id === selectedHazardForPopulationId) ?? null
+    : null;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -183,6 +228,13 @@ function App() {
                 />
               )}
               {activeNav === "typhoon" && <SimulationPanel />}
+              {activeNav === "population" && (
+                <Population
+                  shelters={shelters}
+                  selectedHazard={selectedHazardForPopulation}
+                  onPopulationCardFocus={handlePopulationCardFocus}
+                />
+              )}
               {activeNav === "hazardManagement" && (
                 <HazardManagement
                   hazards={hazards}
@@ -198,13 +250,16 @@ function App() {
         {/* Main */}
         <Box className="h-full w-full overflow-hidden">
           <Map
+            activePanel={activeNav}
             shelters={shelters}
             hazards={hazards}
             editingHazardId={editingHazardId}
             onHazardGeometryChange={handleHazardGeometryChange}
+            onHazardSelectionChange={handleHazardSelectionChange}
             areaFilterFocusRequest={areaFilterFocusRequest}
             shelterCardFocusRequest={shelterCardFocusRequest}
             hazardCardFocusRequest={hazardCardFocusRequest}
+            populationCardFocusRequest={populationCardFocusRequest}
           />
         </Box>
       </Grid>

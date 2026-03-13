@@ -13,6 +13,11 @@ const KIND_SEARCH_ALIASES: Record<LayerKind, string[]> = {
   shelterPins: ["shelter pin", "pin", "pins", "location", "marker"],
   shelterStatusHalo: ["shelter halo", "halo", "status", "heatmap", "ring", "ringed"],
   selectedShelterHighlight: ["selected", "selection", "highlight", "focus", "single", "target"],
+  hazardFill: ["hazard fill", "hazard", "flood", "risk", "isochrone"],
+  hazardOutline: ["hazard outline", "flood outline", "flood edge", "isochrones", "ring"],
+  populationPolygons: ["population polygon", "population", "densities", "footprint", "areas"],
+  populationOutlines: ["population outline", "population boundary", "impact boundary", "isochrone edge"],
+  populationSelection: ["population selection", "selected population", "focused population", "municipality focus"],
 };
 
 type LayerManagementPanelProps = {
@@ -172,7 +177,7 @@ function LayerManagementPanel({
       <div className="flex items-start justify-between border-b border-neutral-200 px-3 py-2">
         <div>
           <div className="text-sm font-bold text-neutral-900">Layer Management</div>
-          <div className="text-[11px] text-neutral-500">Manage shelter and simulation layers</div>
+          <div className="text-[11px] text-neutral-500">Manage shelter and map layers</div>
         </div>
         <button
           type="button"
@@ -563,30 +568,34 @@ function LayerManagementPanel({
                     </label>
                   </div>
 
-                  <div>
-                    <div className="text-[11px] text-neutral-600">Status Filters</div>
-                    <div className="mt-1 flex gap-2">
-                      {STATUS_OPTIONS.map((status) => (
-                        <label
-                          key={status}
-                          className="inline-flex items-center gap-1 text-[11px] text-neutral-700"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedLayerConfig.filters.statuses.includes(status)}
-                            onChange={(event) =>
-                              onToggleLayerStatusFilter(
-                                selectedLayerConfig.id,
-                                status,
-                                event.target.checked
-                              )
-                            }
-                          />
-                          {status}
-                        </label>
-                      ))}
+                  {(selectedLayerConfig.kind === "shelterPins" ||
+                    selectedLayerConfig.kind === "shelterStatusHalo" ||
+                    selectedLayerConfig.kind === "selectedShelterHighlight") && (
+                    <div>
+                      <div className="text-[11px] text-neutral-600">Status Filters</div>
+                      <div className="mt-1 flex gap-2">
+                        {STATUS_OPTIONS.map((status) => (
+                          <label
+                            key={status}
+                            className="inline-flex items-center gap-1 text-[11px] text-neutral-700"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedLayerConfig.filters.statuses.includes(status)}
+                              onChange={(event) =>
+                                onToggleLayerStatusFilter(
+                                  selectedLayerConfig.id,
+                                  status,
+                                  event.target.checked
+                                )
+                              }
+                            />
+                            {status}
+                          </label>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-2">
                     <label className="block text-[11px] text-neutral-600">

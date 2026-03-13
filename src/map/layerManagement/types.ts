@@ -9,7 +9,14 @@ export const STATUS_OPTIONS: ShelterRecord["status"][] = [
 export type LayerKind =
   | "shelterPins"
   | "shelterStatusHalo"
-  | "selectedShelterHighlight";
+  | "selectedShelterHighlight"
+  | "hazardFill"
+  | "hazardOutline"
+  | "populationPolygons"
+  | "populationOutlines"
+  | "populationSelection";
+
+export type LayerGroup = "Shelters" | "Hazards" | "Population";
 
 export type LayerFilters = {
   region: "all" | ShelterRecord["region"];
@@ -28,7 +35,7 @@ export type LayerConfig = {
   id: string;
   kind: LayerKind;
   name: string;
-  group: "Shelters";
+  group: LayerGroup;
   visible: boolean;
   order: number;
   filters: LayerFilters;
@@ -40,4 +47,9 @@ export const RENDER_COST_HINT_BY_KIND: Record<LayerKind, string> = {
   shelterPins: "Low",
   shelterStatusHalo: "Medium",
   selectedShelterHighlight: "Low",
+  hazardFill: "Medium",
+  hazardOutline: "Low",
+  populationPolygons: "Medium",
+  populationOutlines: "Low",
+  populationSelection: "Low",
 };
