@@ -2,11 +2,13 @@ import type { FeatureCollection, Point } from "geojson";
 import MapLibre, { type GeoJSONSource } from "maplibre-gl";
 import type { ShelterRecord } from "../../shelterData";
 import pinIcon from "../../assets/icons/pin.png";
-import { getLayerIdForKind } from "./config";
+import { ALL_LAYER_KINDS, getLayerIdForKind } from "./config";
 import { STATUS_OPTIONS, type LayerConfig, type LayerFilters, type LayerKind } from "./types";
 
 export const SHELTER_SOURCE_ID = "shelter-locations";
 const SHELTER_PIN_IMAGE_ID = "shelter-pin-image";
+const HAZARD_SOURCE_ID = "hazard-isochrones-source";
+const POPULATION_SOURCE_ID = "population-points-source";
 
 function toShelterFeatureCollection(
   shelters: ShelterRecord[]
@@ -106,22 +108,155 @@ function ensureLayerForKind(map: MapLibre.Map, kind: LayerKind) {
     return;
   }
 
-  map.addLayer({
-    id: layerId,
-    type: "circle",
-    source: SHELTER_SOURCE_ID,
-    paint: {
-      "circle-color": "rgba(59, 130, 246, 0.35)",
-      "circle-radius": 16,
-      "circle-opacity": 0.85,
-      "circle-stroke-color": "#1d4ed8",
-      "circle-stroke-width": 3,
-    },
-    layout: {
-      visibility: "visible",
-    },
-    filter: ["==", ["get", "id"], "__none__"],
-  });
+  if (kind === "selectedShelterHighlight") {
+    map.addLayer({
+      id: layerId,
+      type: "circle",
+      source: SHELTER_SOURCE_ID,
+      paint: {
+        "circle-color": "rgba(59, 130, 246, 0.35)",
+        "circle-radius": 16,
+        "circle-opacity": 0.85,
+        "circle-stroke-color": "#1d4ed8",
+        "circle-stroke-width": 3,
+      },
+      layout: {
+        visibility: "visible",
+      },
+      filter: ["==", ["get", "id"], "__none__"],
+    });
+    return;
+  }
+
+  if (!map.getSource(HAZARD_SOURCE_ID) && !map.getSource(POPULATION_SOURCE_ID)) return;
+
+  if (kind === "hazardFill") {
+    map.addLayer({
+      id: layerId,
+      type: "fill",
+      source: HAZARD_SOURCE_ID,
+      paint: {
+        "fill-color": [
+          "match",
+          ["get", "severity"],
+          "Low",
+          "#22c55e",
+          "Moderate",
+          "#3b82f6",
+          "High",
+          "#f97316",
+          "#ef4444",
+        ],
+        "fill-opacity": 0.22,
+      },
+    });
+    return;
+  }
+
+  if (kind === "hazardOutline") {
+    map.addLayer({
+      id: layerId,
+      type: "line",
+      source: HAZARD_SOURCE_ID,
+      paint: {
+        "line-color": [
+          "match",
+          ["get", "severity"],
+          "Low",
+          "#15803d",
+          "Moderate",
+          "#1d4ed8",
+          "High",
+          "#c2410c",
+          "#b91c1c",
+        ],
+        "line-width": 2,
+        "line-opacity": 0.9,
+      },
+      layout: {
+        "line-cap": "round",
+        "line-join": "round",
+      },
+    });
+    return;
+  }
+
+  if (kind === "populationPolygons") {
+    map.addLayer({
+      id: layerId,
+      type: "fill",
+      source: POPULATION_SOURCE_ID,
+      paint: {
+        "fill-color": [
+          "step",
+          ["to-number", ["get", "impactIndex"], 0],
+          "#bfdbfe",
+          20,
+          "#60a5fa",
+          40,
+          "#facc15",
+          65,
+          "#f97316",
+          85,
+          "#dc2626",
+          95,
+          "#7f1d1d",
+        ],
+        "fill-opacity": [
+          "interpolate",
+          ["linear"],
+          ["to-number", ["get", "totalPopulation"], 0],
+          5000,
+          0.19,
+          100000,
+          0.26,
+          250000,
+          0.32,
+          500000,
+          0.38,
+        ],
+      },
+    });
+    return;
+  }
+
+  if (kind === "populationOutlines") {
+    map.addLayer({
+      id: layerId,
+      type: "line",
+      source: POPULATION_SOURCE_ID,
+      paint: {
+        "line-color": [
+          "step",
+          ["to-number", ["get", "impactIndex"], 0],
+          "#334155",
+          45,
+          "#0369a1",
+          70,
+          "#ea580c",
+          90,
+          "#b91c1c",
+        ],
+        "line-width": ["interpolate", ["linear"], ["to-number", ["get", "radiusKm"], 0], 0, 0.8, 4, 1.6],
+        "line-opacity": 0.45,
+      },
+    });
+    return;
+  }
+
+  if (kind === "populationSelection") {
+    map.addLayer({
+      id: layerId,
+      type: "fill",
+      source: POPULATION_SOURCE_ID,
+      filter: ["==", ["get", "id"], "__none__"],
+      paint: {
+        "fill-color": "#0ea5e9",
+        "fill-opacity": 0.45,
+        "fill-outline-color": "#0f172a",
+      },
+    });
+  }
 }
 
 function removeManagedLayerIfExists(map: MapLibre.Map, kind: LayerKind) {
@@ -148,19 +283,26 @@ export function getFilteredShelters(
   kind: LayerKind,
   selectedShelterId: string | null
 ) {
+  const isShelterKind = isShelterVisualLayer(kind);
   return shelters.filter((shelter) => {
     const matchesRegion = filters.region === "all" || shelter.region === filters.region;
     const municipalityQuery = normalizeLocation(filters.municipalityCity);
     const matchesMunicipality =
       municipalityQuery.length === 0 ||
       normalizeLocation(shelter.municipalityCity) === municipalityQuery;
-    const matchesStatus = filters.statuses.includes(shelter.status);
+    const matchesStatus = isShelterKind ? filters.statuses.includes(shelter.status) : true;
     const matchesSelected =
       kind !== "selectedShelterHighlight" ||
       (selectedShelterId !== null && shelter.id === selectedShelterId);
 
     return matchesRegion && matchesMunicipality && matchesStatus && matchesSelected;
   });
+}
+
+function isShelterVisualLayer(kind: LayerKind) {
+  return (
+    kind === "shelterPins" || kind === "shelterStatusHalo" || kind === "selectedShelterHighlight"
+  );
 }
 
 function buildLayerFilter(
@@ -178,7 +320,7 @@ function buildLayerFilter(
     clauses.push(["==", ["get", "municipalityCity"], municipalityQuery]);
   }
 
-  if (layerConfig.filters.statuses.length < STATUS_OPTIONS.length) {
+  if (isShelterVisualLayer(layerConfig.kind) && layerConfig.filters.statuses.length < STATUS_OPTIONS.length) {
     clauses.push(["in", ["get", "status"], ["literal", layerConfig.filters.statuses]]);
   }
 
@@ -206,10 +348,22 @@ function applyLayerStyle(
   if (layerConfig.kind === "shelterPins") {
     map.setLayoutProperty(layerId, "icon-size", layerConfig.style.iconSize);
     map.setPaintProperty(layerId, "icon-opacity", layerConfig.style.opacity);
-  } else {
+  } else if (
+    layerConfig.kind === "shelterStatusHalo" ||
+    layerConfig.kind === "selectedShelterHighlight"
+  ) {
     map.setPaintProperty(layerId, "circle-opacity", layerConfig.style.opacity);
     map.setPaintProperty(layerId, "circle-radius", layerConfig.style.radius);
     map.setPaintProperty(layerId, "circle-stroke-width", layerConfig.style.strokeWidth);
+  } else if (
+    layerConfig.kind === "hazardFill" ||
+    layerConfig.kind === "populationPolygons" ||
+    layerConfig.kind === "populationSelection"
+  ) {
+    map.setPaintProperty(layerId, "fill-opacity", layerConfig.style.opacity);
+  } else if (layerConfig.kind === "hazardOutline" || layerConfig.kind === "populationOutlines") {
+    map.setPaintProperty(layerId, "line-opacity", layerConfig.style.opacity);
+    map.setPaintProperty(layerId, "line-width", layerConfig.style.strokeWidth);
   }
 
   const filter = buildLayerFilter(layerConfig, selectedShelterId);
@@ -226,13 +380,11 @@ export async function syncManagedLayers(
   await ensureShelterPinImage(map);
 
   const configuredKinds = new Set(layerConfigs.map((layerConfig) => layerConfig.kind));
-  (["shelterPins", "shelterStatusHalo", "selectedShelterHighlight"] as LayerKind[]).forEach(
-    (kind) => {
-      if (!configuredKinds.has(kind)) {
-        removeManagedLayerIfExists(map, kind);
-      }
+  ALL_LAYER_KINDS.forEach((kind) => {
+    if (!configuredKinds.has(kind)) {
+      removeManagedLayerIfExists(map, kind);
     }
-  );
+  });
 
   layerConfigs.forEach((layerConfig) => {
     ensureLayerForKind(map, layerConfig.kind);
@@ -252,7 +404,10 @@ export function getInteractiveLayerIds(map: MapLibre.Map, layerConfigs: LayerCon
     .filter(
       (layerConfig) =>
         layerConfig.visible &&
-        (layerConfig.kind === "shelterPins" || layerConfig.kind === "shelterStatusHalo")
+        isShelterVisualLayer(layerConfig.kind) &&
+        ["shelterPins", "shelterStatusHalo", "selectedShelterHighlight"].includes(
+          layerConfig.kind
+        )
     )
     .map((layerConfig) => getLayerIdForKind(layerConfig.kind))
     .filter((layerId) => map.getLayer(layerId));
